@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Gagaball Simulator - Advanced Version</title>
+  <title>Dodecahedron Arena — Easy Version</title>
   <style>
     :root{
       /* Shared column spec for the history table (Angle | Launch (X, Y) | Power) */
@@ -120,11 +120,12 @@
     drag: { active:false, x:0, y:0, startX:0, startY:0 },
     lastAngle: 0,
     lastLaunch: null,            // {x,y,angle, ux, uy, powerPct}
-    sessions: [],                // [{angle, ux, uy, powerPct, path}]
+    sessions: [],                // [{angle, ux, uy, powerPct, path, edges}]
     roundFinished: false,
     hitSeq: [],
     hoverPath: null,
-    hoverStart: null,            // {x,y} start point (pixel coords) for hovered session
+    hoverStart: null,            // {x,y}
+    hoverEdges: null,            // Set of edge indices for hovered session
     currentPath: []
   };
 
@@ -509,7 +510,7 @@
       // Grid overlay
       drawGrid();
 
-      // Edge hit effects
+      // Edge hit flash (current run)
       ctx.save();
       ctx.lineCap = 'round';
       for(const e of edges){
@@ -525,6 +526,7 @@
       }
       ctx.restore();
 
+      // Persistent lit edges from current run
       if(state.litEdges.size){
         ctx.save();
         ctx.lineCap = 'round';
@@ -540,11 +542,27 @@
         ctx.restore();
       }
 
+      // Hovered session edges highlight (requested)
+      if(state.hoverEdges && state.hoverEdges.size){
+        ctx.save();
+        ctx.lineCap = 'round';
+        for(const e of edges){
+          if(!state.hoverEdges.has(e.index)) continue;
+          ctx.lineWidth = 6;
+          ctx.strokeStyle = 'rgba(255,209,102,0.25)';
+          ctx.beginPath(); ctx.moveTo(e.ax,e.ay); ctx.lineTo(e.bx,e.by); ctx.stroke();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = '#ffd166';
+          ctx.beginPath(); ctx.moveTo(e.ax,e.ay); ctx.lineTo(e.bx,e.by); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       drawEdgeNumbers();
       drawCardinalLabels();
     }
 
-    // Hovered session: draw its path and a small yellow start dot (no center arrow)
+    // Hovered session: draw its path and a small yellow start dot
     if(state.hoverPath && state.hoverPath.length){
       drawPath(state.hoverPath, 'rgba(255,224,102,0.22)', 2);
       if(state.hoverStart){
@@ -617,8 +635,14 @@
     document.getElementById('finalOverlay').style.display = 'none';
   }
   function saveSession(){
+    // Unique edges (indices 0..11) in order of first hit
+    const edgesUnique = Array.from(new Set(state.hitSeq.map(n => n - 1)));
     const { angle, ux, uy, powerPct } = state.lastLaunch;
-    state.sessions.unshift({ angle, ux, uy, powerPct, path: state.currentPath.slice() });
+    state.sessions.unshift({
+      angle, ux, uy, powerPct,
+      path: state.currentPath.slice(),
+      edges: edgesUnique
+    });
     if(state.sessions.length > 20) state.sessions.length = 20;
     renderSessionHistory();
   }
@@ -633,14 +657,16 @@
       const powerCell = document.createElement('div'); powerCell.className='hp-c'; powerCell.textContent = `${row.powerPct}%`;
       rowEl.appendChild(angleCell); rowEl.appendChild(xyCell); rowEl.appendChild(powerCell); grid.appendChild(rowEl);
 
-      // Hover: show its path and mark its start point (no center arrow)
+      // Hover: show its path, start dot, and highlight its sides
       rowEl.addEventListener('mouseenter', () => {
         state.hoverPath = row.path || null;
         state.hoverStart = (row.path && row.path.length) ? { x: row.path[0].x, y: row.path[0].y } : null;
+        state.hoverEdges = row.edges ? new Set(row.edges) : null;
       });
       rowEl.addEventListener('mouseleave', () => {
         state.hoverPath = null;
         state.hoverStart = null;
+        state.hoverEdges = null;
       });
     });
   }
