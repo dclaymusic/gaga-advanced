@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dodecahedron Arena — Easy Version</title>
+  <style>
+    :root{
+      /* Shared column spec for the history table (Angle | Launch (X, Y) | Power) */
+      --hp-colspec: 92px 172px 1fr;
+    }
+    body { margin:0; background:#0b0e14; height:100vh; display:flex; align-items:center; justify-content:center; position:relative; }
+    canvas { width:100%; height:100%; display:block; }
+    .pill { color:#f2f2f2; font: 13px/1.2 system-ui, sans-serif; }
+    #statsOverlay { position:absolute; top:12px; left:12px; display:flex; gap:10px; align-items:center; z-index:10; background:rgba(18,23,34,0.85); padding:12px 16px; border-radius:12px; border:1px solid #263149; color:#f2f2f2; font-size:22px; }
+    #finalOverlay { position:absolute; inset:0; background:rgba(0,0,0,0.55); display:none; z-index:20; pointer-events:auto; font-family:system-ui, sans-serif; color:#f7fafc; }
+    .overlayPanel { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(15,20,30,0.9); border:1px solid #263149; border-radius:16px; padding:28px 36px; min-width:420px; text-align:center; color:#e6edf3; }
+    .overlayPanel .bigTitle { font-size:48px; font-weight:900; margin:0 0 20px; }
+    /* Three compact columns for Angle/Power/Start; Sides spans full width below */
+    .overlayPanel .statGrid { display:grid; grid-template-columns: repeat(3, minmax(150px, 1fr)); gap:14px 28px; align-items:end; justify-items:center; }
+    .overlayPanel .stat .label { font-size:13px; opacity:.8; }
+    .overlayPanel .stat .value { font-size:32px; font-weight:800; line-height:1; }
+    .overlayPanel .stat.center { text-align:center; }
+    .overlayPanel button { cursor:pointer; padding:10px 16px; border-radius:10px; border:1px solid #2a3446; background:#111723; color:#cdd7e5; font-size:14px; margin-top:24px; }
+
+    /* History panel: bottom-left, 50px skinnier than original */
+    #historyPanel {
+      position:absolute; left:12px; bottom:12px; z-index:10;
+      background:rgba(18,23,34,0.9); color:#e6edf3; border:1px solid #263149; border-radius:12px;
+      padding:12px 14px; font-family:system-ui, sans-serif;
+      min-width:430px; /* 50px narrower than the earlier 480px */
+      max-width:calc(34vw - 50px);
+      max-height:40vh; overflow:auto;
+    }
+    #historyPanel .hp-title { font-size:18px; opacity:.95; margin-bottom:12px; }
+    #historyPanel .hp-grid { display:block; }
+    #historyPanel .hp-header{
+      display:grid; grid-template-columns: var(--hp-colspec); gap:10px 16px;
+      position:sticky; top:0; background:rgba(18,23,34,0.96); padding-bottom:6px; z-index:1;
+    }
+    #historyPanel .hp-h { font-size:18px; opacity:.92; border-bottom:1px solid rgba(255,255,255,0.18); padding-bottom:6px; }
+    #historyPanel .hp-c { font-size:18px; opacity:.98; line-height:1.35; overflow-wrap:anywhere; }
+    #historyPanel .hp-row{
+      display:grid; grid-template-columns: var(--hp-colspec); gap:10px 16px;
+      align-items:flex-start; padding:6px 6px; border-radius:6px; cursor:pointer; transition:background 0.2s ease;
+      border-bottom:1px dashed rgba(255,255,255,0.12);
+    }
+    #historyPanel .hp-row:hover{ background:rgba(255,255,255,0.08); }
+    #historyPanel .hp-latest { background: rgba(255,255,255,0.06); font-weight:700; padding:2px 6px; border-radius:6px; }
+
+    @media (max-width: 900px){
+      #historyPanel { max-width: calc(45vw - 50px); }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="statsOverlay"><div class="pill">Sides hit: <span id="statSides">—</span></div></div>
+
+  <div id="finalOverlay">
+    <div class="overlayPanel">
+      <h1 class="bigTitle">Results</h1>
+      <div class="statGrid">
+        <div class="stat center">
+          <div class="label">Angle</div>
+          <div id="finalAngle" class="value">0°</div>
+        </div>
+        <div class="stat center">
+          <div class="label">Power</div>
+          <div id="finalPower" class="value">0%</div>
+        </div>
+        <div class="stat center">
+          <div class="label">Start (X, Y)</div>
+          <div id="finalStart" class="value">(0, 0)</div>
+        </div>
+        <div class="stat center" style="grid-column:1 / -1;">
+          <div class="label">Sides hit (in order)</div>
+          <div id="finalSides" class="value" style="font-size:22px; word-break:break-word;">—</div>
+        </div>
+      </div>
+      <button id="tryAgainBtn">Try Again</button>
+    </div>
+  </div>
+
+  <!-- History: Angle | Launch (X, Y) | Power -->
+  <div id="historyPanel">
+    <div class="hp-title">Last 20 Sessions</div>
+    <div class="hp-grid" id="hpGrid">
+      <div class="hp-header">
+        <div class="hp-h">Angle</div>
+        <div class="hp-h">Launch (X, Y)</div>
+        <div class="hp-h">Power</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const TAU = Math.PI * 2;
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  let dpr = Math.max(1, window.devicePixelRatio || 1);
+
+  // Arena / ball
+  const TARGET_RADIUS = 260;
+  const BALL_RADIUS   = 24;
+
+  // Power
+  const POWER_MAX_DIST = 200; // px -> 100%
+  const MAX_SPEED      = 1500; // at 100%
+
+  // State
+  const state = {
+    width: 0, height: 0,
+    center: { x: 0, y: 0 },
+    polygon: [],
+    balls: [],
+    litEdges: new Set(),
+    edgeFlash: Array(12).fill(0),
+    drag: { active:false, x:0, y:0, startX:0, startY:0 },
+    lastAngle: 0,
+    lastLaunch: null,            // {x,y,angle, ux, uy, powerPct}
+    sessions: [],                // [{angle, ux, uy, powerPct, path}]
+    roundFinished: false,
+    hitSeq: [],
+    hoverPath: null,
+    hoverStart: null,            // {x,y} start point (pixel coords) for hovered session
+    currentPath: []
+  };
+
+  // Audio
+  const sounds = {};
+  function preloadSounds(){
+    for(let i=1;i<=12;i++){
+      for(const s of ['a','b']){
+        const key = `edge${i}${s}`;
+        const a = new Audio();
+        a.src = `${key}.mp3`;
+        sounds[key] = a;
+      }
+    }
+  }
+  function playEdgeSound(edgeIndex, isFirst){
+    const n = edgeIndex + 1;
+    const key = `edge${n}${isFirst ? 'a' : 'b'}`;
+    const a = sounds[key] ? sounds[key].cloneNode() : null;
+    if(a){ try { a.play(); } catch(_) {} }
+  }
+
+  // Geometry: regular dodecagon
+  function buildDodecagon(cx, cy, r){
+    const N = 12;
+    const verts = [];
+    for(let i=0;i<N;i++){
+      const a = (TAU * i)/N - Math.PI/2;
+      verts.push({ x: cx + r*Math.cos(a), y: cy + r*Math.sin(a) });
+    }
+    state.polygon.length = 0;
+    for(let i=0;i<N;i++){
+      const A = verts[i];
+      const B = verts[(i+1)%N];
+      const ex = B.x - A.x, ey = B.y - A.y;
+      const len = Math.hypot(ex, ey);
+      const nx = ey/len, ny = -ex/len;
+      const mx = (A.x + B.x)/2, my = (A.y + B.y)/2;
+      state.polygon.push({ index:i, ax:A.x, ay:A.y, bx:B.x, by:B.y, nx, ny, len, mx, my });
+    }
+  }
+
+  // Inside helpers
+  function clampInsidePolygon(x, y, margin = BALL_RADIUS + 1){
+    let px = x, py = y;
+    for(let iter=0; iter<3; iter++){
+      for(const e of state.polygon){
+        const distOut = (px - e.ax)*e.nx + (py - e.ay)*e.ny;
+        const need = distOut + margin;
+        if(need > 0){
+          px -= e.nx * need;
+          py -= e.ny * need;
+        }
+      }
+    }
+    return { x: px, y: py };
+  }
+
+  // Stats helpers
+  function resetStats(){
+    state.hitSeq = [];
+    state.litEdges.clear();
+    updateStatsUI();
+  }
+  function updateStatsUI(){
+    const el = document.getElementById('statSides');
+    if(!el) return;
+    el.textContent = state.hitSeq.length ? state.hitSeq.join(', ') : '—';
+  }
+  function registerHit(edgeIndex){
+    const n = edgeIndex + 1;
+    state.hitSeq.push(n);
+    const first = !state.litEdges.has(edgeIndex);
+    state.litEdges.add(edgeIndex);
+    if(first) state.edgeFlash[edgeIndex] = 0.6;
+    updateStatsUI();
+    playEdgeSound(edgeIndex, first);
+  }
+
+  // Angle helper
+  function angleCWNorth(dx, dy){
+    return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  }
+
+  // Arena-centered coords (X right+, Y up+)
+  function toArenaCoords(px, py){
+    const ux = Math.round(px - state.center.x);
+    const uy = Math.round(state.center.y - py);
+    return { ux, uy };
+  }
+
+  // Power from drag length
+  function powerFromLen(len){
+    const frac = Math.max(0, Math.min(1, len / POWER_MAX_DIST));
+    return { frac, pct: Math.round(frac * 100) };
+  }
+
+  // Physics / Launch
+  function launchBallFromPoint(x, y, angle, powerFrac, powerPct){
+    resetStats();
+    state.balls.length = 0;
+
+    const speed = MAX_SPEED * powerFrac;
+    const rad = angle * Math.PI/180;
+    const vx = Math.sin(rad) * speed;
+    const vy = -Math.cos(rad) * speed;
+
+    const safe = clampInsidePolygon(x, y, BALL_RADIUS + 0.5);
+    const { ux, uy } = toArenaCoords(safe.x, safe.y);
+
+    state.balls.push({
+      x: safe.x, y: safe.y, vx, vy,
+      r: BALL_RADIUS, restitution: 0.95,
+      drag: 0.991, minSpeed: 10,
+      hitCooldown: 0, lastEdge: -1
+    });
+    state.roundFinished = false;
+    state.lastAngle = Math.round(angle);
+    state.lastLaunch = { x: safe.x, y: safe.y, angle: state.lastAngle, ux, uy, powerPct };
+    state.currentPath = [{ x: safe.x, y: safe.y }];
+  }
+
+  function update(dt){
+    for(const b of state.balls){
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      if(b.hitCooldown > 0) b.hitCooldown -= dt;
+
+      for(const e of state.polygon){
+        const distOut = (b.x - e.ax)*e.nx + (b.y - e.ay)*e.ny;
+        if(distOut > -b.r){
+          const pen = distOut + b.r;
+          b.x -= e.nx * pen;
+          b.y -= e.ny * pen;
+          const vOut = b.vx*e.nx + b.vy*e.ny;
+          if(vOut > 0){
+            b.vx = (b.vx - 2*vOut*e.nx) * b.restitution;
+            b.vy = (b.vy - 2*vOut*e.ny) * b.restitution;
+            if(b.hitCooldown <= 0 || b.lastEdge !== e.index){
+              registerHit(e.index);
+              b.lastEdge = e.index;
+              b.hitCooldown = 0.06;
+            }
+          }
+        }
+      }
+
+      addTrailPoint(b);
+
+      const dragPow = Math.pow(b.drag, dt*60);
+      b.vx *= dragPow; b.vy *= dragPow;
+
+      if(Math.hypot(b.vx, b.vy) < b.minSpeed){
+        b.vx = 0; b.vy = 0;
+        if(!state.roundFinished){
+          state.roundFinished = true;
+          showFinalOverlay();
+          saveSession();
+          state.currentPath = [];
+        }
+      }
+    }
+
+    for(let i=0;i<state.edgeFlash.length;i++){
+      if(state.edgeFlash[i] > 0) state.edgeFlash[i] = Math.max(0, state.edgeFlash[i]-dt);
+    }
+  }
+
+  // ===== Drawing utils =====
+  function roundRectPath(x, y, w, h, r){
+    const rr = Math.min(r, Math.abs(w)/2, Math.abs(h)/2);
+    ctx.beginPath();
+    ctx.moveTo(x+rr, y);
+    ctx.lineTo(x+w-rr, y);
+    ctx.quadraticCurveTo(x+w, y, x+w, y+rr);
+    ctx.lineTo(x+w, y+h-rr);
+    ctx.quadraticCurveTo(x+w, y+h, x+w-rr, y+h);
+    ctx.lineTo(x+rr, y+h);
+    ctx.quadraticCurveTo(x, y+h, x, y+h-rr);
+    ctx.lineTo(x, y+rr);
+    ctx.quadraticCurveTo(x, y, x+rr, y);
+    ctx.closePath();
+  }
+
+  function drawInfoLabel(text, x, y){
+    ctx.save();
+    ctx.font = '14px system-ui, sans-serif';
+    const padX = 8, padY = 6, rad = 8;
+    const metrics = ctx.measureText(text);
+    const w = Math.ceil(metrics.width) + padX*2;
+    const h = 22 + padY*2;
+    roundRectPath(x, y - h, w, h, rad);
+    ctx.fillStyle = 'rgba(15,20,30,0.65)';
+    ctx.strokeStyle = 'rgba(147,180,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(230,237,243,0.98)';
+    ctx.fillText(text, x + padX, y - h + padY + 16);
+    ctx.restore();
+  }
+
+  // Grid overlay (20px), clipped to polygon
+  function drawGrid(){
+    if(!state.polygon.length) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(state.polygon[0].ax, state.polygon[0].ay);
+    for(const e of state.polygon){ ctx.lineTo(e.bx, e.by); }
+    ctx.closePath();
+    ctx.clip();
+
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+
+    const cx = state.center.x, cy = state.center.y;
+    for(let x=cx; x<=state.width; x+=20){ ctx.beginPath(); ctx.moveTo(x, cy-2000); ctx.lineTo(x, cy+2000); ctx.stroke(); }
+    for(let x=cx-20; x>=0; x-=20){ ctx.beginPath(); ctx.moveTo(x, cy-2000); ctx.lineTo(x, cy+2000); ctx.stroke(); }
+    for(let y=cy; y<=state.height; y+=20){ ctx.beginPath(); ctx.moveTo(cx-2000, y); ctx.lineTo(cx+2000, y); ctx.stroke(); }
+    for(let y=cy-20; y>=0; y-=20){ ctx.beginPath(); ctx.moveTo(cx-2000, y); ctx.lineTo(cx+2000, y); ctx.stroke(); }
+
+    ctx.strokeStyle = 'rgba(147,180,255,0.22)'; // center axes
+    ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.moveTo(cx, cy-2000); ctx.lineTo(cx, cy+2000); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx-2000, cy); ctx.lineTo(cx+2000, cy); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // Render helpers
+  function drawEdgeNumbers(){
+    if(!state.polygon.length) return;
+    ctx.save();
+    ctx.font = '18px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for(const e of state.polygon){
+      const offset = 28;
+      const px = e.mx - e.nx * offset;
+      const py = e.my - e.ny * offset;
+      const n = e.index + 1;
+      const lit = state.litEdges.has(e.index);
+      const fill = lit ? 'rgba(255,209,102,0.85)' : 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(11,14,20,0.5)';
+      ctx.strokeText(String(n), px, py);
+      ctx.fillStyle = fill;
+      ctx.fillText(String(n), px, py);
+    }
+    ctx.restore();
+  }
+
+  function drawAim(){
+    if(!state.drag.active) return;
+    const sx = state.drag.startX, sy = state.drag.startY;
+    const dx = sx - state.drag.x, dy = sy - state.drag.y;
+    const len = Math.hypot(dx, dy);
+    if(len === 0) return;
+
+    const { pct: pPct } = powerFromLen(len);
+    const dirx = dx/len, diry = dy/len;
+    const cappedLen = Math.min(len, POWER_MAX_DIST);
+
+    // Preview ball at start
+    ctx.beginPath();
+    ctx.arc(sx, sy, BALL_RADIUS, 0, TAU);
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Pull line
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx - dirx*cappedLen, sy - diry*cappedLen);
+    ctx.strokeStyle = '#93b4ff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Arrow head
+    const ah = 12, tipX = sx + dirx*32, tipY = sy + diry*32;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - dirx*ah - diry*(ah*0.6), tipY - diry*ah + dirx*(ah*0.6));
+    ctx.lineTo(tipX - dirx*ah + diry*(ah*0.6), tipY - diry*ah - dirx*(ah*0.6));
+    ctx.closePath();
+    ctx.fillStyle = '#93b4ff';
+    ctx.fill();
+
+    const angle = angleCWNorth(dx, dy);
+    const { ux, uy } = toArenaCoords(sx, sy);
+    const label = `angle: ${Math.round(angle)}°  start: (${ux}, ${uy})  power: ${pPct}%`;
+    drawInfoLabel(label, sx + 24, sy - BALL_RADIUS - 16);
+  }
+
+  function drawDirectionArrowFrom(originX, originY, angle, color = '#93b4ff', length = 120){
+    const rad = angle * Math.PI/180;
+    const dirx = Math.sin(rad), diry = -Math.cos(rad);
+    const tipX = originX + dirx*length, tipY = originY + diry*length;
+
+    ctx.beginPath();
+    ctx.moveTo(originX, originY);
+    ctx.lineTo(tipX, tipY);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const ah = 12;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - dirx*ah - diry*(ah*0.6), tipY - diry*ah + dirx*(ah*0.6));
+    ctx.lineTo(tipX - dirx*ah + diry*(ah*0.6), tipY - diry*ah - dirx*(ah*0.6));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function drawAngleStartPowerAt(x, y, angle, powerPct){
+    const { ux, uy } = toArenaCoords(x, y);
+    const label = `angle: ${Math.round(angle)}°  start: (${ux}, ${uy})  power: ${powerPct}%`;
+    drawInfoLabel(label, x + 24, y - BALL_RADIUS - 16);
+  }
+
+  function drawCardinalLabels(){
+    const cx = state.center.x, cy = state.center.y;
+    const r = TARGET_RADIUS + 28;
+    ctx.save();
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    function label(text, x, y){
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(11,14,20,0.7)';
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = '#93b4ff';
+      ctx.fillText(text, x, y);
+    }
+    label('0°',   cx,       cy - r);
+    label('90°',  cx + r,   cy);
+    label('180°', cx,       cy + r);
+    label('270°', cx - r,   cy);
+    ctx.restore();
+  }
+
+  // Trajectory
+  function addTrailPoint(b){
+    const p = { x: b.x, y: b.y };
+    const trail = state.currentPath;
+    const n = trail.length;
+    if(n === 0){ trail.push(p); return; }
+    const last = trail[n-1];
+    const dx = p.x - last.x, dy = p.y - last.y;
+    if(dx*dx + dy*dy > 4) trail.push(p);
+    if(trail.length > 4000) trail.splice(0, trail.length - 4000);
+  }
+  function drawPath(path, color = 'rgba(147,180,255,0.18)', width = 2){
+    if(!path || path.length < 2) return;
+    ctx.save();
+    ctx.lineWidth = width;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for(let i=1;i<path.length;i++) ctx.lineTo(path[i].x, path[i].y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    const edges = state.polygon;
+
+    if(edges.length){
+      // Arena
+      ctx.beginPath();
+      ctx.moveTo(edges[0].ax, edges[0].ay);
+      for(const e of edges) ctx.lineTo(e.bx, e.by);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(22,32,54,0.55)';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#93b4ff';
+      ctx.stroke();
+
+      // Grid overlay
+      drawGrid();
+
+      // Edge hit effects
+      ctx.save();
+      ctx.lineCap = 'round';
+      for(const e of edges){
+        const t = state.edgeFlash[e.index] || 0;
+        if(t <= 0) continue;
+        const a = Math.min(1, t/0.6);
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = `rgba(255,214,102,${a})`;
+        ctx.beginPath();
+        ctx.moveTo(e.ax, e.ay);
+        ctx.lineTo(e.bx, e.by);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      if(state.litEdges.size){
+        ctx.save();
+        ctx.lineCap = 'round';
+        for(const e of edges){
+          if(!state.litEdges.has(e.index)) continue;
+          ctx.lineWidth = 6;
+          ctx.strokeStyle = 'rgba(255,209,102,0.35)';
+          ctx.beginPath(); ctx.moveTo(e.ax,e.ay); ctx.lineTo(e.bx,e.by); ctx.stroke();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = '#ffd166';
+          ctx.beginPath(); ctx.moveTo(e.ax,e.ay); ctx.lineTo(e.bx,e.by); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      drawEdgeNumbers();
+      drawCardinalLabels();
+    }
+
+    // Hovered session: draw its path and a small yellow start dot (no center arrow)
+    if(state.hoverPath && state.hoverPath.length){
+      drawPath(state.hoverPath, 'rgba(255,224,102,0.22)', 2);
+      if(state.hoverStart){
+        ctx.beginPath();
+        ctx.arc(state.hoverStart.x, state.hoverStart.y, 5, 0, TAU);
+        ctx.fillStyle = '#ffe066';
+        ctx.fill();
+      }
+    }
+
+    // Current path
+    if(state.currentPath && state.currentPath.length){
+      drawPath(state.currentPath, 'rgba(147,180,255,0.18)', 2);
+    }
+
+    // Ball(s)
+    for(const b of state.balls){
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, TAU);
+      ctx.fillStyle = '#ffd166';
+      ctx.fill();
+    }
+
+    // Aim visuals
+    drawAim();
+
+    // Post-launch label & arrow from true origin
+    if(!state.drag.active && state.balls.length > 0 && state.lastLaunch){
+      drawDirectionArrowFrom(state.lastLaunch.x, state.lastLaunch.y, state.lastLaunch.angle, '#93b4ff', 120);
+      drawAngleStartPowerAt(state.lastLaunch.x, state.lastLaunch.y, state.lastLaunch.angle, state.lastLaunch.powerPct);
+    }
+  }
+
+  // Resize & RAF
+  function resize(){
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width  = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    state.width = cssW;
+    state.height = cssH;
+    state.center.x = cssW/2;
+    state.center.y = cssH/2;
+    buildDodecagon(state.center.x, state.center.y, TARGET_RADIUS);
+  }
+  function frame(now){
+    if(!frame.last) frame.last = now;
+    const dt = Math.min(0.033, (now - frame.last)/1000);
+    frame.last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // Final overlay & history
+  function showFinalOverlay(){
+    const angleStr = state.lastAngle + '°';
+    const sidesStr = state.hitSeq.length ? state.hitSeq.join(', ') : '—';
+    const powerStr = (state.lastLaunch?.powerPct ?? 0) + '%';
+    const startStr = `(${state.lastLaunch?.ux ?? 0}, ${state.lastLaunch?.uy ?? 0})`;
+    document.getElementById('finalAngle').textContent = angleStr;
+    document.getElementById('finalSides').textContent = sidesStr;
+    document.getElementById('finalPower').textContent = powerStr;
+    document.getElementById('finalStart').textContent = startStr;
+    document.getElementById('finalOverlay').style.display = 'block';
+  }
+  function hideFinalOverlay(){
+    document.getElementById('finalOverlay').style.display = 'none';
+  }
+  function saveSession(){
+    const { angle, ux, uy, powerPct } = state.lastLaunch;
+    state.sessions.unshift({ angle, ux, uy, powerPct, path: state.currentPath.slice() });
+    if(state.sessions.length > 20) state.sessions.length = 20;
+    renderSessionHistory();
+  }
+  function renderSessionHistory(){
+    const grid = document.getElementById('hpGrid');
+    grid.innerHTML = '<div class="hp-header"><div class="hp-h">Angle</div><div class="hp-h">Launch (X, Y)</div><div class="hp-h">Power</div></div>';
+    state.sessions.forEach((row, idx) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'hp-row' + (idx===0 ? ' hp-latest' : '');
+      const angleCell = document.createElement('div'); angleCell.className='hp-c'; angleCell.textContent = row.angle + '°';
+      const xyCell = document.createElement('div'); xyCell.className='hp-c'; xyCell.textContent = `(${row.ux}, ${row.uy})`;
+      const powerCell = document.createElement('div'); powerCell.className='hp-c'; powerCell.textContent = `${row.powerPct}%`;
+      rowEl.appendChild(angleCell); rowEl.appendChild(xyCell); rowEl.appendChild(powerCell); grid.appendChild(rowEl);
+
+      // Hover: show its path and mark its start point (no center arrow)
+      rowEl.addEventListener('mouseenter', () => {
+        state.hoverPath = row.path || null;
+        state.hoverStart = (row.path && row.path.length) ? { x: row.path[0].x, y: row.path[0].y } : null;
+      });
+      rowEl.addEventListener('mouseleave', () => {
+        state.hoverPath = null;
+        state.hoverStart = null;
+      });
+    });
+  }
+
+  // Input
+  function getLocalXY(e){
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    try { canvas.setPointerCapture(e.pointerId); } catch(_) {}
+    const p = getLocalXY(e);
+    const start = clampInsidePolygon(p.x, p.y, BALL_RADIUS + 1);
+    state.drag.active = true;
+    state.drag.startX = start.x;
+    state.drag.startY = start.y;
+    state.drag.x = p.x;
+    state.drag.y = p.y;
+    hideFinalOverlay();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if(!state.drag.active) return;
+    const p = getLocalXY(e);
+    state.drag.x = p.x; state.drag.y = p.y;
+  });
+  function endDrag(e){
+    if(!state.drag.active) return;
+    state.drag.active = false;
+    try { canvas.releasePointerCapture(e.pointerId); } catch(_) {}
+    const sx = state.drag.startX, sy = state.drag.startY;
+    const dx = sx - state.drag.x, dy = sy - state.drag.y;
+    if(dx === 0 && dy === 0) return;
+    const len = Math.hypot(dx, dy);
+    const { frac: powerFrac, pct: powerPct } = powerFromLen(len);
+    const angle = Math.round(angleCWNorth(dx, dy));
+    launchBallFromPoint(sx, sy, angle, powerFrac, powerPct);
+  }
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointerleave', endDrag);
+
+  // Boot
+  function runSanity(){
+    console.assert(Math.round(angleCWNorth(0,-1)) === 0,   'Angle up should be 0°');
+    console.assert(Math.round(angleCWNorth(1,0))  === 90,  'Angle right should be 90°');
+    console.assert(Math.round(angleCWNorth(0,1))  === 180, 'Angle down should be 180°');
+    console.assert(Math.round(angleCWNorth(-1,0)) === 270, 'Angle left should be 270°');
+    console.assert(Math.round(angleCWNorth(1,-1)) === 45,  'Angle NE should be 45°');
+    console.assert(Math.round(angleCWNorth(-1,-1)) === 315,'Angle NW should be 315°');
+  }
+
+  preloadSounds();
+  resize();
+  renderSessionHistory();
+  runSanity();
+  requestAnimationFrame(frame);
+  window.addEventListener('resize', resize);
+  document.getElementById('tryAgainBtn').addEventListener('click', () => {
+    hideFinalOverlay();
+    resetStats();
+    state.balls = [];
+    state.currentPath = [];
+  });
+})();
+</script>
+</body>
+</html>
